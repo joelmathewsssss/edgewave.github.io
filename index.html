@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>edgewave 2 — Chord Synth + Looper</title>
+  <title>EdgeWave 2 — Chord Synth + Looper</title>
 
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet" />
@@ -289,7 +289,7 @@
 
   <header>
     <div class="logo">
-      <h1>GestureWave</h1>
+      <h1>EdgeWave</h1>
       <span class="tagline">CHORD SYNTH · LOOPER · DRUMS</span>
     </div>
     <div class="status-pill" id="statusPill">
@@ -308,7 +308,7 @@
 
       <div id="startOverlay">
         <div class="overlay-hand">🙌</div>
-        <div class="overlay-title">GESTURE CHORD SYNTH</div>
+        <div class="overlay-title">EDGEWAVE CHORD SYNTH</div>
         <div class="overlay-desc">
           <strong>Right hand</strong> — close fist to play chords. Height = chord.<br>
           <strong>Left hand</strong> — extend one finger per drum hit.<br>
@@ -352,9 +352,9 @@
         <div class="card-label">🥁 DRUMS · LEFT HAND</div>
         <div class="perc-grid">
           <div class="perc-item" id="pi0"><span class="pi-finger">INDEX</span><span class="pi-name">HI-HAT</span></div>
-          <div class="perc-item" id="pi1"><span class="pi-finger">MIDDLE</span><span class="pi-name">KICK</span></div>
-          <div class="perc-item" id="pi2"><span class="pi-finger">RING</span><span class="pi-name">SNARE</span></div>
-          <div class="perc-item" id="pi3"><span class="pi-finger">PINKY</span><span class="pi-name">OPEN HH</span></div>
+          <div class="perc-item" id="pi1"><span class="pi-finger">MIDDLE</span><span class="pi-name">SNARE</span></div>
+          <div class="perc-item" id="pi2"><span class="pi-finger">RING</span><span class="pi-name">OPEN HH</span></div>
+          <div class="perc-item" id="pi3"><span class="pi-finger">PINKY</span><span class="pi-name">KICK</span></div>
         </div>
         <div class="card-sub" id="percSpeedDisplay">Tilt left wrist ↑ faster ↓ slower</div>
       </div>
@@ -388,7 +388,7 @@
   </div>
 
   <footer>
-    <p>GestureWave v2.0 &nbsp;·&nbsp; MediaPipe Hands + Tone.js</p>
+    <p>EdgeWave v2.0 &nbsp;·&nbsp; MediaPipe Hands + Tone.js</p>
     <p id="footerStatus">Awaiting initialization</p>
   </footer>
 
@@ -423,6 +423,7 @@ const CONNECTIONS = [
 const FILTER_MIN_HZ = 300;
 const FILTER_MAX_HZ = 8000;
 const CHORD_CHANGE_DEBOUNCE_MS = 180; // min ms between chord changes while fist held
+const RIGHT_HAND_STALE_MS = 120;
 
 
 /* ================================================================
@@ -431,13 +432,13 @@ const CHORD_CHANGE_DEBOUNCE_MS = 180; // min ms between chord changes while fist
 
 /**
  * Build an array of {name, degree} note objects for the given key,
- * spanning octaves 3–5 (15 notes = 3 octaves × 5 pentatonic degrees).
+ * spanning octaves 4–5 (10 notes = 2 octaves × 5 pentatonic degrees).
  */
 function buildScale(key) {
   const root = FLAT_MAP[key] || key;
   const rootIdx = CHROMATIC.indexOf(root);
   const notes = [];
-  for (const oct of [3, 4, 5]) {
+  for (const oct of [4, 5]) {
     for (let d = 0; d < 5; d++) {
       const semi = PENTA_SEMI[d];
       const noteIdx = (rootIdx + semi) % 12;
@@ -445,7 +446,7 @@ function buildScale(key) {
       notes.push({ name: `${CHROMATIC[noteIdx]}${noteOct}`, degree: d });
     }
   }
-  return notes; // 15 entries
+  return notes; // 10 entries
 }
 
 /**
@@ -660,6 +661,7 @@ const scaleLabel   = document.getElementById('scaleLabel');
 const chordNameEl  = document.getElementById('chordName');
 const chordNotesEl = document.getElementById('chordNotes');
 const chordBar     = document.getElementById('chordBar');
+const chordCard    = document.getElementById('chordCard');
 const recBtn       = document.getElementById('recBtn');
 const stpBtn       = document.getElementById('stpBtn');
 const clrBtn       = document.getElementById('clrBtn');
@@ -685,6 +687,7 @@ const rightState = {
   chordNotes: [],
   chordIdx: -1,
   lastChangeMs: 0,
+  lastSeenMs: 0,
 };
 
 // Left hand state
@@ -750,7 +753,7 @@ function buildAudioChain() {
   }).connect(percRev);
 
   audioReady = true;
-  console.log('[GestureWave2] Audio chain ready');
+  console.log('[EdgeWave2] Audio chain ready');
 }
 
 function firePercInstrument(inst, time) {
@@ -821,6 +824,7 @@ function palmCenter(lms) {
 
 function processRightHand(lms) {
   if (!audioReady) return;
+  rightState.lastSeenMs = performance.now();
   const fist  = isFistClosed(lms);
   const palm  = palmCenter(lms);
   const idx   = yToScaleIdx(palm.y);
@@ -873,12 +877,12 @@ function processRightHand(lms) {
     chordNameEl.className   = 'card-value';
     chordNotesEl.textContent = `${roman} · ${rightState.chordNotes.join(' ')}`;
     chordBar.style.width     = `${((idx + 1) / scaleNotes.length) * 100}%`;
-    document.getElementById('chordCard').classList.add('lit');
+    chordCard.classList.add('lit');
   } else {
     chordNameEl.textContent  = fist ? label : '——';
     chordNotesEl.textContent = fist ? `${roman} · ${notes.join(' ')}` : 'Close fist to play chord';
     chordBar.style.width     = `${((idx + 1) / scaleNotes.length) * 100}%`;
-    document.getElementById('chordCard').classList.remove('lit');
+    chordCard.classList.remove('lit');
   }
 
   // Draw
@@ -886,8 +890,8 @@ function processRightHand(lms) {
 }
 
 function releaseRightHand() {
-  if (rightState.isFist && audioReady) {
-    polySynth.triggerRelease(rightState.chordNotes);
+  if (audioReady) {
+    polySynth.releaseAll(Tone.now() + 0.01);
     looper.chordOff();
     rightState.isFist   = false;
     rightState.chordNotes = [];
@@ -896,7 +900,7 @@ function releaseRightHand() {
   chordNameEl.textContent  = '——';
   chordNotesEl.textContent = 'Close fist to play chord';
   chordBar.style.width     = '0%';
-  document.getElementById('chordCard').classList.remove('lit');
+  chordCard.classList.remove('lit');
 }
 
 function processLeftHand(lms) {
@@ -904,8 +908,6 @@ function processLeftHand(lms) {
   leftHandLms = lms;
   const extended = getExtendedFingers(lms);
   const speed    = getPercSpeed(lms);
-
-  const INSTR = ['hihat','kick','snare','openHH'];
 
   for (let i = 0; i < 4; i++) {
     const isUp = extended.includes(i);
@@ -941,7 +943,7 @@ function processLeftHand(lms) {
 }
 
 function _triggerPercFinger(i, lms) {
-  const INSTR = ['hihat','kick','snare','openHH'];
+  const INSTR = ['hihat','snare','openHH','kick'];
   const inst  = INSTR[i];
   const time  = Tone.now() + 0.01;
   firePercInstrument(inst, time);
@@ -997,7 +999,7 @@ function drawHand(lms, color, label, special, glowFingers) {
   ctx.lineWidth   = 2;
   ctx.strokeStyle = `${color}A5`;  // ~65% alpha
   ctx.shadowColor = color;
-  ctx.shadowBlur  = 10;
+  ctx.shadowBlur  = 6;
   CONNECTIONS.forEach(([a, b]) => {
     ctx.beginPath();
     ctx.moveTo(pts[a].x, pts[a].y);
@@ -1010,7 +1012,7 @@ function drawHand(lms, color, label, special, glowFingers) {
     const isWrist = i === 0;
     ctx.fillStyle   = isWrist ? '#FFFFFF' : color;
     ctx.shadowColor = isWrist ? '#FFFFFF' : color;
-    ctx.shadowBlur  = isWrist ? 16 : 8;
+    ctx.shadowBlur  = isWrist ? 12 : 5;
     ctx.beginPath();
     ctx.arc(pts[i].x, pts[i].y, isWrist ? 6 : 3, 0, Math.PI * 2);
     ctx.fill();
@@ -1023,7 +1025,7 @@ function drawHand(lms, color, label, special, glowFingers) {
       const pt = pts[TIP_IDX[fi]];
       ctx.fillStyle   = '#FFB347';
       ctx.shadowColor = '#FFB347';
-      ctx.shadowBlur  = 18;
+      ctx.shadowBlur  = 12;
       ctx.beginPath();
       ctx.arc(pt.x, pt.y, 7, 0, Math.PI * 2);
       ctx.fill();
@@ -1038,7 +1040,7 @@ function drawHand(lms, color, label, special, glowFingers) {
     ctx.globalAlpha = (1 - t) * 0.55;
     ctx.strokeStyle = color;
     ctx.shadowColor = color;
-    ctx.shadowBlur  = 22;
+    ctx.shadowBlur  = 14;
     ctx.lineWidth   = 2;
     ctx.beginPath();
     ctx.arc(palmX, palmY, 18 + t * 26, 0, Math.PI * 2);
@@ -1152,14 +1154,9 @@ function selectKey(key) {
   currentKey = key;
   scaleNotes = buildScale(key);
   // Release any held chord in the new key
-  if (rightState.isFist) {
-    polySynth.triggerRelease(rightState.chordNotes);
-    rightState.isFist = false;
-    rightState.chordNotes = [];
-    rightState.chordIdx = -1;
-  }
+  releaseRightHand();
   const display = KEY_DISPLAY[KEYS.indexOf(key)];
-  scaleLabel.textContent = `${display} Major Pentatonic`;
+  scaleLabel.textContent = `${display} 4-5 Octave Pentatonic`;
 
   // Update button highlights
   document.querySelectorAll('.key-btn').forEach(btn => {
@@ -1206,6 +1203,10 @@ function onResults(results) {
     releaseRightHand();
     stopLeftHand();
     return;
+  }
+
+  if (!rightLMs && rightState.isFist && performance.now() - rightState.lastSeenMs > RIGHT_HAND_STALE_MS) {
+    releaseRightHand();
   }
 
   setStatus(rightState.isFist ? 'playing' : 'active');
@@ -1340,27 +1341,4 @@ clrBtn.addEventListener('click', () => {
 
 /* ================================================================
    SECTION 16: STARTUP — Button Handler
-================================================================ */
-
-startBtn.addEventListener('click', async () => {
-  startBtn.textContent = 'INITIALIZING…';
-  startBtn.disabled    = true;
-
-  try {
-    await Tone.start();
-    buildAudioChain();
-    setupKeyButtons();
-    await initializeMediaPipe();
-    startOverlay.classList.add('hidden');
-    animateLooperBar(); // Start looper bar animation loop
-    console.log('[GestureWave2] Ready.');
-  } catch (err) {
-    console.error('[GestureWave2] Startup error:', err);
-    startBtn.textContent = 'ERROR — REFRESH PAGE';
-    startBtn.style.background = 'var(--pink)';
-  }
-});
-
-</script>
-</body>
-</html>
+=========================================================... (1 KB left)
