@@ -1,0 +1,1425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GestureWave — Hand Synthesizer</title>
+
+  <!-- ── Google Fonts: Orbitron (display) + Share Tech Mono (data) ── -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet" />
+
+  <!-- ── MediaPipe Hands (CDN) ── -->
+  <!-- camera_utils: feeds webcam frames into the MediaPipe graph -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <!-- drawing_utils: helpers for drawing landmarks (we draw custom, but this exports HAND_CONNECTIONS) -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+  <!-- hands: the core ML model solution -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+  <!-- ── Tone.js v14 (CDN) ── -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+
+  <style>
+    /* ============================================================
+       CSS DESIGN TOKENS — Cyberpunk Lab Aesthetic
+       Palette: deep black-blue bg, electric cyan primary,
+       hot pink accents, amber trigger indicator.
+       ============================================================ */
+    :root {
+      --bg:         #04080F;
+      --surface:    #090F1C;
+      --surface-2:  #0D1526;
+      --border:     rgba(0, 255, 229, 0.10);
+      --border-hot: rgba(0, 255, 229, 0.40);
+
+      --cyan:  #00FFE5;
+      --pink:  #FF2D6B;
+      --amber: #FFB347;
+      --text:  #C2DCF0;
+      --dim:   rgba(194, 220, 240, 0.35);
+
+      --glow-c: 0 0 16px rgba(0, 255, 229, 0.55), 0 0 50px rgba(0, 255, 229, 0.15);
+      --glow-p: 0 0 16px rgba(255, 45, 107, 0.55),  0 0 50px rgba(255, 45, 107, 0.15);
+      --glow-a: 0 0 16px rgba(255, 179, 71, 0.55),  0 0 50px rgba(255, 179, 71, 0.15);
+
+      --font-head: 'Orbitron', sans-serif;
+      --font-mono: 'Share Tech Mono', monospace;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-mono);
+      overflow: hidden;
+    }
+
+    /* ── CRT scanline texture (purely decorative) ── */
+    body::before {
+      content: '';
+      position: fixed; inset: 0; z-index: 9999;
+      background: repeating-linear-gradient(
+        0deg, transparent, transparent 2px,
+        rgba(0,0,0,0.06) 2px, rgba(0,0,0,0.06) 4px
+      );
+      pointer-events: none;
+    }
+
+    /* ── Subtle noise grain ── */
+    body::after {
+      content: '';
+      position: fixed; inset: 0; z-index: 9998;
+      opacity: 0.03;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+      pointer-events: none;
+    }
+
+    /* ================================================================
+       LAYOUT
+       ================================================================ */
+    #app {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      max-width: 1340px;
+      margin: 0 auto;
+      padding: 0 1.4rem;
+    }
+
+    /* ── HEADER ── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.75rem 0;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    .logo {
+      display: flex;
+      align-items: baseline;
+      gap: 0.75rem;
+    }
+
+    .logo h1 {
+      font-family: var(--font-head);
+      font-size: 1.35rem;
+      font-weight: 900;
+      letter-spacing: 0.06em;
+      color: var(--cyan);
+      text-shadow: var(--glow-c);
+    }
+
+    .logo .tagline {
+      font-size: 0.68rem;
+      letter-spacing: 0.12em;
+      color: var(--dim);
+    }
+
+    /* Status pill */
+    .status-pill {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.28rem 0.85rem;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      font-size: 0.68rem;
+      letter-spacing: 0.12em;
+      color: var(--dim);
+      transition: border-color 0.3s, color 0.3s;
+    }
+
+    .status-pill .dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: var(--dim);
+      flex-shrink: 0;
+      transition: background 0.3s, box-shadow 0.3s;
+    }
+
+    .status-pill.active  { border-color: var(--border-hot); color: var(--cyan); }
+    .status-pill.active  .dot { background: var(--cyan);  box-shadow: var(--glow-c); animation: pulse 1.6s infinite; }
+    .status-pill.playing { border-color: rgba(255,179,71,0.5); color: var(--amber); }
+    .status-pill.playing .dot { background: var(--amber); box-shadow: var(--glow-a); animation: pulse 0.7s infinite; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50%       { opacity: 0.45; transform: scale(0.75); }
+    }
+
+    /* ── MAIN GRID ── */
+    .main-layout {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 1fr 274px;
+      gap: 1.2rem;
+      padding: 1rem 0;
+      min-height: 0;   /* CRITICAL: lets flex child shrink below content size */
+      overflow: hidden;
+    }
+
+    /* ── STAGE (video + canvas) ── */
+    .stage-wrap {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      background: #000;
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.8), inset 0 0 80px rgba(0,0,0,0.7);
+    }
+
+    /* Corner frame decorators */
+    .corner {
+      position: absolute;
+      width: 18px; height: 18px;
+      border-color: var(--cyan);
+      border-style: solid;
+      z-index: 10;
+      opacity: 0.5;
+    }
+    .corner.tl { top: 10px;    left: 10px;    border-width: 2px 0 0 2px; }
+    .corner.tr { top: 10px;    right: 10px;   border-width: 2px 2px 0 0; }
+    .corner.bl { bottom: 10px; left: 10px;    border-width: 0 0 2px 2px; }
+    .corner.br { bottom: 10px; right: 10px;   border-width: 0 2px 2px 0; }
+
+    #webcam, #overlay {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+      object-fit: cover;
+    }
+
+    /*
+      MIRROR TRICK: Both video and canvas are CSS-mirrored using scaleX(-1).
+      This creates a "selfie mirror" feel — the user sees their hand
+      on the same side as they'd expect when looking in a mirror.
+      The canvas drawing uses raw MediaPipe coords, which also get mirrored
+      by the CSS, so landmarks align perfectly with the video.
+    */
+    #webcam  { transform: scaleX(-1); }
+    #overlay { transform: scaleX(-1); }
+
+    /* ── START OVERLAY ── */
+    #startOverlay {
+      position: absolute; inset: 0; z-index: 20;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: 1.2rem;
+      background: rgba(4, 8, 15, 0.93);
+      backdrop-filter: blur(6px);
+      transition: opacity 0.6s ease;
+    }
+
+    #startOverlay.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .overlay-hand {
+      font-size: 3.8rem;
+      filter: drop-shadow(0 0 14px var(--cyan));
+      animation: float 3s ease-in-out infinite;
+    }
+
+    @keyframes float {
+      0%, 100% { transform: translateY(0); }
+      50%       { transform: translateY(-8px); }
+    }
+
+    .overlay-title {
+      font-family: var(--font-head);
+      font-size: 1.25rem;
+      font-weight: 900;
+      letter-spacing: 0.12em;
+      color: var(--cyan);
+      text-shadow: var(--glow-c);
+    }
+
+    .overlay-desc {
+      font-size: 0.74rem;
+      color: var(--dim);
+      text-align: center;
+      max-width: 300px;
+      line-height: 1.7;
+    }
+
+    #startBtn {
+      position: relative;
+      padding: 0.75rem 2.2rem;
+      font-family: var(--font-head);
+      font-size: 0.82rem;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      color: var(--bg);
+      background: var(--cyan);
+      border: none;
+      border-radius: 3px;
+      cursor: pointer;
+      overflow: hidden;
+      transition: box-shadow 0.25s, transform 0.15s;
+      box-shadow: var(--glow-c);
+    }
+
+    #startBtn::after {
+      content: '';
+      position: absolute; inset: 0;
+      background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.2) 50%, transparent 100%);
+      transform: translateX(-100%);
+      transition: transform 0.4s;
+    }
+
+    #startBtn:hover::after { transform: translateX(100%); }
+    #startBtn:hover { box-shadow: 0 0 40px rgba(0,255,229,0.8), 0 0 100px rgba(0,255,229,0.3); }
+    #startBtn:active { transform: scale(0.96); }
+    #startBtn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+    /* ── SIDEBAR PANEL ── */
+    .panel {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      min-height: 0;
+      overflow-y: auto;
+      padding-right: 2px; /* avoids clipping box-shadow on cards */
+    }
+
+    /* Scrollbar styling */
+    .panel::-webkit-scrollbar { width: 3px; }
+    .panel::-webkit-scrollbar-track { background: transparent; }
+    .panel::-webkit-scrollbar-thumb { background: var(--border-hot); border-radius: 99px; }
+
+    /* ── DATA CARD ── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.85rem 1rem;
+      flex-shrink: 0;
+      transition: border-color 0.3s;
+    }
+
+    .card.lit { border-color: var(--border-hot); }
+
+    .card-label {
+      font-size: 0.62rem;
+      letter-spacing: 0.16em;
+      color: var(--dim);
+      text-transform: uppercase;
+      margin-bottom: 0.45rem;
+    }
+
+    .card-value {
+      font-family: var(--font-head);
+      font-size: 1.4rem;
+      font-weight: 700;
+      color: var(--cyan);
+      text-shadow: var(--glow-c);
+      line-height: 1;
+      letter-spacing: 0.04em;
+      transition: color 0.2s, text-shadow 0.2s;
+    }
+
+    .card-value.pink  { color: var(--pink);  text-shadow: var(--glow-p); }
+    .card-value.amber { color: var(--amber); text-shadow: var(--glow-a); }
+
+    .card-sub {
+      font-size: 0.68rem;
+      color: var(--dim);
+      margin-top: 0.35rem;
+      min-height: 1em;
+    }
+
+    /* Mini progress bar */
+    .bar-track {
+      height: 3px;
+      background: rgba(255,255,255,0.05);
+      border-radius: 999px;
+      margin-top: 0.65rem;
+      overflow: hidden;
+    }
+
+    .bar-fill {
+      height: 100%;
+      border-radius: 999px;
+      background: var(--cyan);
+      box-shadow: var(--glow-c);
+      width: 0%;
+      transition: width 0.07s linear;
+    }
+
+    .bar-fill.pink  { background: var(--pink);  box-shadow: var(--glow-p); }
+    .bar-fill.amber { background: var(--amber); box-shadow: var(--glow-a); }
+
+    /* ── GUIDE CARD ── */
+    .guide-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.85rem 1rem;
+      flex: 1;
+      min-height: 0;
+    }
+
+    .guide-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.65rem;
+      padding: 0.5rem 0;
+      border-bottom: 1px solid rgba(0,255,229,0.06);
+    }
+
+    .guide-item:last-child { border-bottom: none; padding-bottom: 0; }
+
+    .g-icon {
+      font-size: 1.1rem;
+      flex-shrink: 0;
+      width: 22px;
+      text-align: center;
+      margin-top: 1px;
+    }
+
+    .g-text {
+      font-size: 0.68rem;
+      line-height: 1.55;
+      color: var(--dim);
+    }
+
+    .g-text strong {
+      display: block;
+      color: var(--text);
+      font-size: 0.7rem;
+      letter-spacing: 0.06em;
+      margin-bottom: 0.1rem;
+    }
+
+    /* ── FOOTER ── */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 0.45rem 0;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-shrink: 0;
+    }
+
+    footer p {
+      font-size: 0.62rem;
+      color: var(--dim);
+      letter-spacing: 0.08em;
+    }
+
+    /* ================================================================
+       RESPONSIVE
+       ================================================================ */
+    @media (max-width: 820px) {
+      html, body { overflow-y: auto; }
+      #app  { height: auto; min-height: 100vh; padding-bottom: 1rem; }
+      .main-layout { grid-template-columns: 1fr; grid-template-rows: auto auto; overflow: visible; }
+      .stage-wrap  { aspect-ratio: 4/3; height: auto; }
+      .panel       { flex-direction: row; flex-wrap: wrap; overflow: visible; }
+      .card        { flex: 1 1 130px; }
+      .guide-card  { flex-basis: 100%; }
+    }
+  </style>
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ════════════════════════════════
+       HEADER
+       ════════════════════════════════ -->
+  <header>
+    <div class="logo">
+      <h1>GestureWave</h1>
+      <span class="tagline">HAND-CONTROLLED SYNTHESIZER</span>
+    </div>
+    <div class="status-pill" id="statusPill">
+      <div class="dot"></div>
+      <span id="statusText">STANDBY</span>
+    </div>
+  </header>
+
+  <!-- ════════════════════════════════
+       MAIN LAYOUT
+       ════════════════════════════════ -->
+  <div class="main-layout">
+
+    <!-- ── Webcam Stage ── -->
+    <div class="stage-wrap" id="stageWrap">
+      <!-- Frame decorators -->
+      <div class="corner tl"></div>
+      <div class="corner tr"></div>
+      <div class="corner bl"></div>
+      <div class="corner br"></div>
+
+      <!-- Live webcam feed (mirrored via CSS) -->
+      <video id="webcam" playsinline autoplay muted></video>
+
+      <!-- Transparent canvas on top for landmark drawing (also mirrored via CSS) -->
+      <canvas id="overlay"></canvas>
+
+      <!-- ── Start Screen Overlay ── -->
+      <div id="startOverlay">
+        <div class="overlay-hand">🖐</div>
+        <div class="overlay-title">GESTURE SYNTHESIZER</div>
+        <div class="overlay-desc">
+          Control sound with your bare hand.<br>
+          Requires webcam access.
+        </div>
+        <button id="startBtn">INITIALIZE SYSTEM</button>
+      </div>
+    </div><!-- /stage-wrap -->
+
+    <!-- ── Sidebar Panel ── -->
+    <div class="panel">
+
+      <!-- PITCH — index finger Y → frequency -->
+      <div class="card" id="pitchCard">
+        <div class="card-label">☝ PITCH  /  INDEX HEIGHT</div>
+        <div class="card-value" id="pitchNote">——</div>
+        <div class="card-sub"  id="pitchHz">Raise index finger for higher pitch</div>
+        <div class="bar-track">
+          <div class="bar-fill" id="pitchBar"></div>
+        </div>
+      </div>
+
+      <!-- PINCH — thumb↔index distance → note on/off -->
+      <div class="card" id="pinchCard">
+        <div class="card-label">🤌 PINCH  /  NOTE TRIGGER</div>
+        <div class="card-value pink" id="pinchState">——</div>
+        <div class="card-sub"       id="pinchSub">Pinch to play, open to release</div>
+        <div class="bar-track">
+          <div class="bar-fill pink" id="pinchBar"></div>
+        </div>
+      </div>
+
+      <!-- FILTER — wrist X → low-pass cutoff -->
+      <div class="card" id="filterCard">
+        <div class="card-label">↔ FILTER  /  WRIST POSITION</div>
+        <div class="card-value amber" id="filterFreq">——</div>
+        <div class="card-sub">Move wrist left/right for tone color</div>
+        <div class="bar-track">
+          <div class="bar-fill amber" id="filterBar"></div>
+        </div>
+      </div>
+
+      <!-- GUIDE -->
+      <div class="guide-card">
+        <div class="card-label">GESTURE GUIDE</div>
+
+        <div class="guide-item">
+          <div class="g-icon">☝️</div>
+          <div class="g-text">
+            <strong>INDEX FINGER HEIGHT</strong>
+            High hand → high pitch. Low hand → bass notes.
+            Quantized to C major pentatonic scale.
+          </div>
+        </div>
+
+        <div class="guide-item">
+          <div class="g-icon">🤏</div>
+          <div class="g-text">
+            <strong>THUMB + INDEX PINCH</strong>
+            Bring fingertips together to trigger a note.
+            Open to release. Glides between pitches while held.
+          </div>
+        </div>
+
+        <div class="guide-item">
+          <div class="g-icon">↔️</div>
+          <div class="g-text">
+            <strong>WRIST HORIZONTAL POS.</strong>
+            Left side = dark/muffled (low-pass filter).
+            Right side = bright, open sound.
+          </div>
+        </div>
+
+        <div class="guide-item">
+          <div class="g-icon">💡</div>
+          <div class="g-text">
+            <strong>TIPS</strong>
+            Good lighting helps tracking. Keep hand
+            30–60 cm from camera. One hand only.
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /panel -->
+  </div><!-- /main-layout -->
+
+  <!-- ════════════════════════════════
+       FOOTER
+       ════════════════════════════════ -->
+  <footer>
+    <p>GestureWave v1.0 &nbsp;·&nbsp; MediaPipe Hands + Tone.js</p>
+    <p id="footerStatus">Awaiting initialization</p>
+  </footer>
+
+</div><!-- /#app -->
+
+
+<!-- ================================================================
+     JAVASCRIPT — GestureWave Audio Engine + MediaPipe Integration
+     ================================================================ -->
+<script>
+'use strict';
+
+/* ================================================================
+   SECTION 1: PENTATONIC SCALE + AUDIO CONSTANTS
+   ================================================================
+
+   Why pentatonic?
+   A pentatonic (5-note) scale has no "avoid" notes — every
+   combination of notes in the scale sounds consonant together.
+   This means the user can freely move their finger and every
+   position will land on a note that sounds musical, not jarring.
+
+   C Major Pentatonic = C, D, E, G, A (no 4th or 7th degree)
+   We span 3.5 octaves: C3 (130 Hz) → C6 (1046 Hz)
+   Frequencies below are equal-temperament values (A4 = 440 Hz).
+================================================================ */
+
+const SCALE = [
+  // ─── Octave 3 ───
+  130.81,  // C3
+  146.83,  // D3
+  164.81,  // E3
+  196.00,  // G3
+  220.00,  // A3
+  // ─── Octave 4 ───
+  261.63,  // C4 (middle C)
+  293.66,  // D4
+  329.63,  // E4
+  392.00,  // G4
+  440.00,  // A4 (concert pitch reference)
+  // ─── Octave 5 ───
+  523.25,  // C5
+  587.33,  // D5
+  659.25,  // E5
+  783.99,  // G5
+  880.00,  // A5
+  // ─── Top note ───
+  1046.50  // C6
+];
+
+/*
+  PINCH_THRESHOLD: Normalized distance (0–1 scale) between
+  thumb tip (landmark 4) and index tip (landmark 8) at which
+  we consider the hand to be "pinching".
+
+  MediaPipe's landmark coords are in [0,1] space relative to
+  the video frame. A value of 0.07 ≈ 7% of the frame width.
+  On a 640px wide frame that's ~45px — a tight but comfortable pinch.
+  Increase this value to make the trigger easier to activate.
+*/
+const PINCH_THRESHOLD = 0.07;
+
+/*
+  FILTER CUTOFF RANGE (Hz) — mapped to wrist X-position.
+  Logarithmic perception: we'll use exponential interpolation
+  so that perceived tonal change feels linear across hand position.
+*/
+const FILTER_MIN_HZ = 280;    // Muffled (wrist at left of screen)
+const FILTER_MAX_HZ = 9000;   // Open/bright (wrist at right)
+
+
+/* ================================================================
+   SECTION 2: DOM REFERENCES
+   ================================================================ */
+
+const video        = document.getElementById('webcam');
+const canvas       = document.getElementById('overlay');
+const ctx          = canvas.getContext('2d');
+const startOverlay = document.getElementById('startOverlay');
+const startBtn     = document.getElementById('startBtn');
+const statusPill   = document.getElementById('statusPill');
+const statusText   = document.getElementById('statusText');
+const footerStatus = document.getElementById('footerStatus');
+
+// Readout elements
+const pitchCard  = document.getElementById('pitchCard');
+const pitchNote  = document.getElementById('pitchNote');
+const pitchHz    = document.getElementById('pitchHz');
+const pitchBar   = document.getElementById('pitchBar');
+const pinchCard  = document.getElementById('pinchCard');
+const pinchState = document.getElementById('pinchState');
+const pinchSub   = document.getElementById('pinchSub');
+const pinchBar   = document.getElementById('pinchBar');
+const filterFreq = document.getElementById('filterFreq');
+const filterBar  = document.getElementById('filterBar');
+
+
+/* ================================================================
+   SECTION 3: APPLICATION STATE
+   ================================================================ */
+
+let noteIsPlaying = false;   // Is the synth currently sustaining a note?
+let audioReady    = false;   // Has Tone.js AudioContext started?
+let currentFreq   = 440;     // Active pitch in Hz (updated per frame)
+let ripples       = [];      // Visual ripple fx: [{x, y, radius, alpha}]
+let scanY         = 0;       // Animated scan-line Y for no-hand state
+
+
+/* ================================================================
+   SECTION 4: TONE.JS AUDIO CHAIN
+   ================================================================
+
+   Signal flow diagram:
+     ┌──────────┐     ┌────────────┐     ┌────────┐     ┌───────┐
+     │ AMSynth  │────▶│ AutoFilter │────▶│ Reverb │────▶│  Vol  │──▶ Speaker
+     └──────────┘     └────────────┘     └────────┘     └───────┘
+         │                 │
+         │                 └── Cutoff freq controlled by wrist X
+         └── Frequency + trigger controlled by pinch + finger Y
+
+   AMSynth: Amplitude Modulation synth. The carrier oscillator is
+   modulated by a second oscillator, creating tremolo-like overtones
+   that sound richer than a plain sine wave.
+================================================================ */
+
+let synth, autoFilter, reverb, masterVol;
+
+function buildAudioChain() {
+  /*
+    MASTER VOLUME: Final output stage.
+    -6 dB leaves headroom and prevents clipping.
+    .toDestination() connects to the browser's audio output.
+  */
+  masterVol = new Tone.Volume(-6).toDestination();
+
+  /*
+    REVERB: Adds room/space ambience.
+    decay: how long the reverb tail rings out (seconds)
+    wet:   0 = fully dry, 1 = fully wet. 0.3 = subtle space.
+    preDelay: short pre-delay before reverb onset (ms)
+  */
+  reverb = new Tone.Reverb({ decay: 2.2, wet: 0.28, preDelay: 0.02 });
+  reverb.connect(masterVol);
+
+  /*
+    AUTOFILTER (low-pass): Shapes the tonal brightness.
+    Controlled by the wrist's X position in real time.
+    rolloff: -24 dB/octave gives a more dramatic sweep effect.
+    Q: resonance at the cutoff (slight resonance adds character).
+  */
+  autoFilter = new Tone.Filter({
+    type:    'lowpass',
+    frequency: 2000,   // Starting cutoff
+    rolloff: -24,
+    Q: 1.2
+  });
+  autoFilter.connect(reverb);
+
+  /*
+    AM SYNTH (Amplitude Modulation):
+    The carrier oscillator (triangle wave) is amplitude-modulated
+    by the modulator oscillator (sine wave). This gives the sound
+    a warm, breathy, slightly trembling quality — perfect for a
+    theremin-like instrument.
+
+    Envelope (ADSR = Attack, Decay, Sustain, Release):
+    - attack:  0.08s  → 80ms soft onset (avoids harsh click)
+    - decay:   0.15s  → brief fall after initial peak
+    - sustain: 0.75   → holds at 75% amplitude while pinching
+    - release: 0.55s  → 550ms fade-out when pinch opens
+
+    harmonicity: modulator freq = carrier freq × harmonicity
+    Setting it to 1.5 creates a perfect fifth overtone texture.
+  */
+  synth = new Tone.AMSynth({
+    oscillator: { type: 'triangle' },
+    envelope: {
+      attack:  0.08,
+      decay:   0.15,
+      sustain: 0.75,
+      release: 0.55
+    },
+    modulation: { type: 'sine' },
+    modulationEnvelope: {
+      attack:  0.35,
+      decay:   0.1,
+      sustain: 0.85,
+      release: 0.3
+    },
+    harmonicity: 1.5
+  });
+  synth.connect(autoFilter);
+
+  audioReady = true;
+  console.log('[GestureWave] Audio chain ready: AMSynth → AutoFilter → Reverb → Vol → Out');
+}
+
+
+/* ================================================================
+   SECTION 5: HAND LANDMARK CONNECTION PAIRS
+   ================================================================
+
+   MediaPipe Hands provides 21 landmarks (indices 0–20).
+   Each landmark is a normalized {x, y, z} position on the hand.
+   These pairs define which landmarks to connect with lines,
+   forming the hand skeleton ("bone" structure).
+
+   Landmark reference:
+     0: Wrist
+     1-4: Thumb (MCP→IP→Tip)
+     5-8: Index finger
+     9-12: Middle finger
+     13-16: Ring finger
+     17-20: Pinky
+================================================================ */
+
+const CONNECTIONS = [
+  [0,1],[1,2],[2,3],[3,4],           // Thumb
+  [0,5],[5,6],[6,7],[7,8],           // Index
+  [0,9],[9,10],[10,11],[11,12],      // Middle
+  [0,13],[13,14],[14,15],[15,16],    // Ring
+  [0,17],[17,18],[18,19],[19,20],    // Pinky
+  [5,9],[9,13],[13,17]               // Palm knuckle arc
+];
+
+// Key landmarks for special highlight treatment
+const KEY_LANDMARKS = new Set([0, 4, 8]);  // Wrist, Thumb Tip, Index Tip
+
+
+/* ================================================================
+   SECTION 6: GESTURE MATH — Mapping Hand Positions to Audio
+   ================================================================ */
+
+/**
+ * Map a normalized Y position to a pentatonic frequency.
+ *
+ * MATH:
+ *   yNorm = 0 → top of frame (hand raised high) → highest pitch
+ *   yNorm = 1 → bottom of frame (hand low)       → lowest pitch
+ *
+ *   We invert yNorm so that moving UP increases pitch, then
+ *   scale it to an index into our SCALE[] array.
+ *
+ *   indexInScale = round( (1 - yNorm) × (SCALE.length - 1) )
+ *
+ * @param {number} yNorm — normalized Y of index fingertip [0, 1]
+ * @returns {number} frequency in Hz from SCALE[]
+ */
+function yToFrequency(yNorm) {
+  const clamped = Math.max(0, Math.min(1, yNorm));
+
+  // Invert: y=0 (top of screen) → index at END of array (highest freq)
+  //         y=1 (bottom)        → index at START (lowest freq)
+  const index = Math.round((1 - clamped) * (SCALE.length - 1));
+  return SCALE[index];
+}
+
+/**
+ * Map a normalized X position (wrist) to a filter cutoff frequency.
+ *
+ * COORDINATE MIRROR NOTE:
+ *   Both video and canvas elements have CSS `transform: scaleX(-1)`.
+ *   This means in camera space, x=0 (left edge) is the USER'S RIGHT.
+ *   After CSS mirroring, the user's right hand appears on screen-right.
+ *
+ *   We want: screen-right (user's right) → bright (high filter cutoff)
+ *   Therefore: wrist.x near 0 → high filter.  wrist.x near 1 → low filter.
+ *   So: t = 1 - wrist.x  (corrects for camera mirror in audio space)
+ *
+ * LOGARITHMIC MAPPING:
+ *   Human pitch perception is logarithmic. Equal perceived changes
+ *   in brightness require equal *ratios* of Hz, not equal *differences*.
+ *   We use exponential interpolation:
+ *     cutoff = FILTER_MIN × (FILTER_MAX / FILTER_MIN)^t
+ *   This gives perceptually linear brightness changes across x-motion.
+ *
+ * @param {number} xNorm — normalized X of wrist landmark [0, 1]
+ * @returns {number} filter cutoff frequency in Hz
+ */
+function xToFilterHz(xNorm) {
+  const clamped = Math.max(0, Math.min(1, xNorm));
+
+  // Invert to align with mirrored visual space:
+  // user's right (screen-right) = high filter = bright
+  const t = 1 - clamped;
+
+  // Exponential (log) interpolation between min and max
+  return FILTER_MIN_HZ * Math.pow(FILTER_MAX_HZ / FILTER_MIN_HZ, t);
+}
+
+/**
+ * Euclidean distance between two MediaPipe landmarks.
+ *
+ * Operates directly in normalized [0,1] space (no need to scale to pixels).
+ * This makes the measurement scale-invariant relative to the video frame.
+ *
+ * Typical values:
+ *   Fully closed pinch: ~0.02–0.05
+ *   Relaxed hand, tips apart: ~0.25–0.45
+ *
+ * @param {{x,y,z}} a — landmark object
+ * @param {{x,y,z}} b — landmark object
+ * @returns {number} distance in normalized units
+ */
+function normDist(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+/**
+ * Convert a frequency (Hz) to the nearest musical note name + octave.
+ *
+ * FORMULA: MIDI note number = 69 + 12 × log₂(f / 440)
+ *   - 69 = MIDI number of A4 (our reference: 440 Hz)
+ *   - Each octave = 12 semitones = 2× frequency
+ *   - Each semitone = 2^(1/12) ≈ 1.0595
+ *
+ * @param {number} freq — frequency in Hz
+ * @returns {string} e.g. "C4", "G5", "A3"
+ */
+function freqToNoteName(freq) {
+  const NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+  const midi   = Math.round(12 * Math.log2(freq / 440) + 69);
+  const name   = NAMES[((midi % 12) + 12) % 12];  // safe modulo for negatives
+  const octave = Math.floor(midi / 12) - 1;
+  return `${name}${octave}`;
+}
+
+
+/* ================================================================
+   SECTION 7: CANVAS DRAWING
+   ================================================================
+
+   Both #webcam and #overlay have CSS `transform: scaleX(-1)`.
+   We draw landmarks using RAW MediaPipe coords (un-flipped).
+   The CSS mirror on the canvas element handles the visual flip,
+   so the drawn skeleton aligns perfectly with the mirrored video.
+
+   Drawing order (painters algorithm, back to front):
+     1. Bone connections (glow lines)
+     2. Landmark dots
+     3. Pinch distance line (thumb ↔ index)
+     4. Pitch guide line (horizontal at index tip height)
+     5. Ripple effects (when note triggered)
+================================================================ */
+
+/**
+ * Draw the hand skeleton + gesture indicators.
+ *
+ * @param {Array}   lms       — array of 21 MediaPipe landmark objects {x,y,z}
+ * @param {boolean} isPinched — whether the pinch threshold is exceeded
+ */
+function drawHand(lms, isPinched) {
+  const W = canvas.width;
+  const H = canvas.height;
+
+  // Convert all normalized landmarks to pixel coordinates
+  const pts = lms.map(lm => ({ x: lm.x * W, y: lm.y * H }));
+
+  // ── 1. BONE CONNECTIONS ──────────────────────────────────────
+  ctx.lineWidth   = 2;
+  ctx.strokeStyle = 'rgba(0, 255, 229, 0.65)';
+  ctx.shadowColor = '#00FFE5';
+  ctx.shadowBlur  = 10;
+
+  CONNECTIONS.forEach(([a, b]) => {
+    ctx.beginPath();
+    ctx.moveTo(pts[a].x, pts[a].y);
+    ctx.lineTo(pts[b].x, pts[b].y);
+    ctx.stroke();
+  });
+
+  // ── 2. LANDMARK DOTS ─────────────────────────────────────────
+  // KEY_LANDMARKS (wrist, thumb tip, index tip) are larger + pink
+  lms.forEach((_, i) => {
+    const isKey = KEY_LANDMARKS.has(i);
+    ctx.shadowColor = isKey ? '#FF2D6B' : '#00FFE5';
+    ctx.fillStyle   = isKey ? '#FF2D6B' : '#00FFE5';
+    ctx.shadowBlur  = isKey ? 14 : 8;
+    ctx.beginPath();
+    ctx.arc(pts[i].x, pts[i].y, isKey ? 7 : 3.5, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  // ── 3. PINCH LINE (Thumb ↔ Index Tip) ────────────────────────
+  // Dashed when open, solid + glowing when pinched
+  const thumbPt = pts[4];   // Landmark 4: Thumb tip
+  const indexPt = pts[8];   // Landmark 8: Index fingertip
+
+  ctx.shadowColor = '#FFB347';
+  ctx.shadowBlur  = isPinched ? 24 : 7;
+  ctx.strokeStyle = isPinched ? '#FFB347' : 'rgba(255, 179, 71, 0.3)';
+  ctx.lineWidth   = isPinched ? 2.5 : 1.5;
+  ctx.setLineDash(isPinched ? [] : [5, 5]);
+
+  ctx.beginPath();
+  ctx.moveTo(thumbPt.x, thumbPt.y);
+  ctx.lineTo(indexPt.x, indexPt.y);
+  ctx.stroke();
+  ctx.setLineDash([]);  // Always reset dash pattern after use
+
+  // ── 4. PITCH GUIDE LINE (horizontal at index tip height) ─────
+  // A subtle dashed horizontal line shows the current pitch zone
+  const pitchY = indexPt.y;
+
+  ctx.globalAlpha = 0.22;
+  ctx.strokeStyle = '#00FFE5';
+  ctx.shadowColor = '#00FFE5';
+  ctx.shadowBlur  = 5;
+  ctx.lineWidth   = 1;
+  ctx.setLineDash([4, 10]);
+  ctx.beginPath();
+  ctx.moveTo(0,  pitchY);
+  ctx.lineTo(W, pitchY);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Note label next to the guide line
+  ctx.globalAlpha = 0.55;
+  ctx.shadowBlur  = 0;
+  ctx.fillStyle   = '#00FFE5';
+  ctx.font        = '12px "Share Tech Mono"';
+  ctx.fillText(freqToNoteName(currentFreq), 10, pitchY - 6);
+
+  // ── 5. ACTIVE RING on index tip when playing ──────────────────
+  if (isPinched) {
+    const t = (Date.now() % 800) / 800;  // 0→1 loop every 800ms
+    const ring_r = 14 + t * 12;           // Expanding radius
+    const ring_a = 1 - t;                 // Fading alpha
+
+    ctx.globalAlpha = ring_a * 0.7;
+    ctx.strokeStyle = '#FFB347';
+    ctx.shadowColor = '#FFB347';
+    ctx.shadowBlur  = 12;
+    ctx.lineWidth   = 1.5;
+    ctx.beginPath();
+    ctx.arc(indexPt.x, indexPt.y, ring_r, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  // Reset context state so subsequent draws start clean
+  ctx.globalAlpha = 1;
+  ctx.shadowBlur  = 0;
+}
+
+/**
+ * Draw ripple effects. Ripples are emitted when a note starts.
+ * They expand outward and fade — purely cosmetic feedback.
+ *
+ * Each ripple object: { x, y, radius, alpha }
+ * On each frame: radius grows, alpha shrinks. Dead ones are pruned.
+ */
+function drawRipples() {
+  // Prune ripples that have faded out completely
+  ripples = ripples.filter(r => r.alpha > 0.02);
+
+  ripples.forEach(r => {
+    ctx.beginPath();
+    ctx.arc(r.x, r.y, r.radius, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(255, 179, 71, ${r.alpha})`;
+    ctx.shadowColor = '#FFB347';
+    ctx.shadowBlur  = 12;
+    ctx.lineWidth   = 1.5;
+    ctx.stroke();
+
+    // Age the ripple: expand and fade each frame
+    r.radius += 4;
+    r.alpha  *= 0.88;
+  });
+
+  ctx.shadowBlur = 0;
+}
+
+/**
+ * Draw the "waiting for hand" state.
+ * Shows a slow vertical scan-line sweep and border pulse.
+ */
+function drawScanEffect() {
+  const W = canvas.width;
+  const H = canvas.height;
+
+  // Advance scan-line position
+  scanY = (scanY + 0.8) % H;
+
+  // Soft gradient beam
+  const grad = ctx.createLinearGradient(0, scanY - 40, 0, scanY + 40);
+  grad.addColorStop(0,   'rgba(0, 255, 229, 0)');
+  grad.addColorStop(0.5, 'rgba(0, 255, 229, 0.06)');
+  grad.addColorStop(1,   'rgba(0, 255, 229, 0)');
+
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, scanY - 40, W, 80);
+
+  // Pulsing border
+  const p = (Math.sin(Date.now() * 0.0025) + 1) / 2;
+  ctx.strokeStyle = `rgba(0, 255, 229, ${0.04 + p * 0.08})`;
+  ctx.lineWidth   = 1;
+  ctx.strokeRect(3, 3, W - 6, H - 6);
+
+  // "Searching" text
+  ctx.fillStyle   = `rgba(0, 255, 229, ${0.25 + p * 0.25})`;
+  ctx.font        = '12px "Share Tech Mono"';
+  ctx.textAlign   = 'center';
+  ctx.fillText('AWAITING GESTURE INPUT…', W / 2, H / 2);
+  ctx.textAlign   = 'left';  // Reset
+}
+
+
+/* ================================================================
+   SECTION 8: UI READOUT UPDATERS
+   ================================================================ */
+
+/**
+ * Update the pitch card readout.
+ * @param {number} freq  — current frequency in Hz
+ * @param {number} yNorm — normalized Y position [0,1] of index tip
+ */
+function updatePitchUI(freq, yNorm) {
+  const note = freqToNoteName(freq);
+  pitchNote.textContent = note;
+  pitchHz.textContent   = `${freq.toFixed(1)} Hz`;
+
+  // Bar: higher pitch (lower yNorm) = more fill
+  pitchBar.style.width = `${(1 - yNorm) * 100}%`;
+}
+
+/**
+ * Update the pinch card readout.
+ * @param {number}  dist      — pinch distance in normalized units
+ * @param {boolean} isPinched — whether threshold is crossed
+ */
+function updatePinchUI(dist, isPinched) {
+  // Invert distance into "closeness" (0=fully open, 1=fully pinched)
+  const MAX_NATURAL_DIST = 0.35;
+  const closeness = Math.max(0, Math.min(1, 1 - dist / MAX_NATURAL_DIST));
+
+  pinchBar.style.width = `${closeness * 100}%`;
+
+  if (isPinched) {
+    pinchState.textContent = 'ACTIVE';
+    pinchSub.textContent   = '● NOTE PLAYING';
+    pinchCard.classList.add('lit');
+  } else {
+    pinchState.textContent = 'OPEN';
+    pinchSub.textContent   = `Gap: ${(dist * 100).toFixed(0)}%`;
+    pinchCard.classList.remove('lit');
+  }
+}
+
+/**
+ * Update the filter card readout.
+ * @param {number} hz    — filter cutoff in Hz
+ * @param {number} xNorm — wrist X position [0,1]
+ */
+function updateFilterUI(hz, xNorm) {
+  filterFreq.textContent = hz >= 1000
+    ? `${(hz / 1000).toFixed(1)}k Hz`
+    : `${Math.round(hz)} Hz`;
+
+  // Bar: wrist-right (x→0 in camera space, appears right on screen) = high filter = full bar
+  filterBar.style.width = `${(1 - xNorm) * 100}%`;
+}
+
+/**
+ * Update the status pill in the header.
+ * @param {'standby'|'active'|'playing'} state
+ */
+function setStatus(state) {
+  statusPill.className = 'status-pill';  // Reset all classes first
+  switch (state) {
+    case 'active':
+      statusPill.classList.add('active');
+      statusText.textContent = 'HAND DETECTED';
+      break;
+    case 'playing':
+      statusPill.classList.add('playing');
+      statusText.textContent = 'NOTE PLAYING';
+      break;
+    default:
+      statusText.textContent = 'NO HAND';
+  }
+}
+
+
+/* ================================================================
+   SECTION 9: MEDIAPIPE RESULTS CALLBACK
+   ================================================================
+
+   This is the CORE FUNCTION of the application.
+   MediaPipe calls this for every processed video frame (~30 fps).
+
+   Flow:
+     Frame arrives → extract landmarks → calculate gestures
+     → update audio engine → draw canvas → update UI readouts
+================================================================ */
+
+/**
+ * onResults: MediaPipe Hands results handler.
+ *
+ * @param {Object} results
+ *   results.multiHandLandmarks — array of hands. Each hand is an
+ *     array of 21 landmark objects: { x: number, y: number, z: number }
+ *     x, y are normalized [0,1] (fraction of image width/height)
+ *     z is depth relative to wrist (not used here)
+ *   results.multiHandedness — array of {label: 'Left'|'Right', score} per hand
+ */
+function onResults(results) {
+  const W = canvas.width;
+  const H = canvas.height;
+
+  // Clear previous frame's drawing
+  ctx.clearRect(0, 0, W, H);
+
+  // Always draw ripples (they persist across frames, fading over time)
+  drawRipples();
+
+  // ── CHECK FOR HAND ────────────────────────────────────────────
+  if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+    // No hand detected this frame
+
+    drawScanEffect();   // Draw "waiting" animation
+    setStatus('standby');
+
+    // Release any sustaining note — we can't control audio without a hand
+    if (noteIsPlaying && audioReady) {
+      synth.triggerRelease();
+      noteIsPlaying = false;
+    }
+    return;  // Nothing more to do
+  }
+
+  // ── EXTRACT LANDMARKS ─────────────────────────────────────────
+  /*
+    We only handle the first detected hand (maxNumHands is set to 1
+    in the Hands config below for better performance).
+    landmarks[n] — one of 21 hand joint positions in [0,1] space.
+  */
+  const landmarks = results.multiHandLandmarks[0];
+
+  const wrist    = landmarks[0];   // Landmark 0: Base of palm / wrist
+  const thumbTip = landmarks[4];   // Landmark 4: Thumb fingertip
+  const indexTip = landmarks[8];   // Landmark 8: Index fingertip
+
+  // ── GESTURE CALCULATION ───────────────────────────────────────
+
+  /*
+    PITCH: Index finger tip Y position.
+    Lower Y value (hand raised high) → higher frequency.
+    We quantize to the pentatonic scale so output is always musical.
+  */
+  currentFreq = yToFrequency(indexTip.y);
+
+  /*
+    PINCH DETECTION: Euclidean distance (thumb tip ↔ index tip).
+    In normalized [0,1] space. Threshold at PINCH_THRESHOLD = 0.07.
+    When distance < threshold, the gesture is a "pinch" → trigger note.
+  */
+  const pinchDist = normDist(thumbTip, indexTip);
+  const isPinched = pinchDist < PINCH_THRESHOLD;
+
+  /*
+    FILTER: Wrist horizontal position.
+    Maps left↔right to low-pass filter cutoff frequency.
+    Uses logarithmic mapping for perceptually linear brightness change.
+  */
+  const filterHz = xToFilterHz(wrist.x);
+
+  // ── AUDIO ENGINE UPDATE ───────────────────────────────────────
+  if (audioReady) {
+
+    /*
+      Smoothly ramp the filter cutoff to the new value.
+      0.06 second ramp prevents "zipper noise" (audible stepping)
+      from rapid parameter changes.
+    */
+    autoFilter.frequency.rampTo(filterHz, 0.06);
+
+    if (isPinched && !noteIsPlaying) {
+      /*
+        ── TRIGGER NOTE START ──
+        triggerAttack(frequency, time) starts the ADSR attack phase.
+        The note will sustain at the 'sustain' level indefinitely
+        until triggerRelease() is called.
+
+        Tone.now() + 0.01: schedule 10ms ahead to avoid
+        "not enough time" errors in some browsers' Web Audio schedulers.
+      */
+      synth.triggerAttack(currentFreq, Tone.now() + 0.01);
+      noteIsPlaying = true;
+
+      // Spawn a visual ripple at the midpoint between thumb and index
+      ripples.push({
+        x:      ((thumbTip.x + indexTip.x) / 2) * W,
+        y:      ((thumbTip.y + indexTip.y) / 2) * H,
+        radius: 8,
+        alpha:  0.85
+      });
+
+    } else if (isPinched && noteIsPlaying) {
+      /*
+        ── UPDATE PITCH DURING SUSTAIN ──
+        While the pinch is held, we continuously update the frequency
+        as the index finger moves up and down.
+
+        synth.frequency is a Tone.Signal — we ramp to avoid clicks.
+        0.05s ramp = ~50ms glide (smooth portamento between notes).
+        This gives the theremin-like pitch slide effect.
+      */
+      synth.frequency.rampTo(currentFreq, 0.05);
+
+    } else if (!isPinched && noteIsPlaying) {
+      /*
+        ── RELEASE NOTE ──
+        triggerRelease() starts the ADSR release phase.
+        The note will fade out over the 'release' duration (0.55s)
+        then stop. No abrupt cutoff.
+      */
+      synth.triggerRelease();
+      noteIsPlaying = false;
+    }
+  }
+
+  // ── DRAW HAND SKELETON + INDICATORS ──────────────────────────
+  drawHand(landmarks, isPinched);
+
+  // ── UPDATE UI READOUTS ────────────────────────────────────────
+  setStatus(noteIsPlaying ? 'playing' : 'active');
+  updatePitchUI(currentFreq, indexTip.y);
+  updatePinchUI(pinchDist, isPinched);
+  updateFilterUI(filterHz, wrist.x);
+}
+
+
+/* ================================================================
+   SECTION 10: MEDIAPIPE INITIALIZATION
+   ================================================================ */
+
+async function initializeMediaPipe() {
+  // ── Request webcam access ─────────────────────────────────────
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        width:  { ideal: 1280 },
+        height: { ideal: 720 },
+        facingMode: 'user'
+      },
+      audio: false
+    });
+  } catch (err) {
+    alert(
+      'Camera access was denied.\n\n' +
+      'Please allow webcam access in your browser settings and refresh the page.\n\n' +
+      `Error: ${err.message}`
+    );
+    console.error('[GestureWave] Webcam error:', err);
+    return;
+  }
+
+  // Attach stream to the <video> element
+  video.srcObject = stream;
+  await new Promise(resolve => { video.onloadedmetadata = resolve; });
+  await video.play();
+
+  // Size the canvas to match the video resolution
+  canvas.width  = video.videoWidth  || 640;
+  canvas.height = video.videoHeight || 480;
+
+  footerStatus.textContent = `Camera ready (${canvas.width}×${canvas.height})`;
+
+  // ── Initialize MediaPipe Hands ────────────────────────────────
+  /*
+    locateFile: CRITICAL. MediaPipe downloads WebAssembly (.wasm) and
+    model files at runtime. We must tell it where those files live —
+    same CDN path as the JS we loaded above.
+  */
+  const hands = new Hands({
+    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+  });
+
+  hands.setOptions({
+    maxNumHands:           1,     // 1 hand = better perf, simpler logic
+    modelComplexity:       1,     // 0=lite/fast, 1=full/accurate
+    minDetectionConfidence:  0.72, // Min confidence to initially detect a hand
+    minTrackingConfidence:   0.60  // Min confidence to keep tracking between frames
+  });
+
+  // Wire up our results callback
+  hands.onResults(onResults);
+
+  /*
+    Camera (from @mediapipe/camera_utils):
+    Creates a render loop that captures frames from the <video>
+    element and passes them to hands.send() for inference.
+    This is the main processing loop (~30fps).
+  */
+  const camera = new Camera(video, {
+    onFrame: async () => {
+      await hands.send({ image: video });
+    },
+    width:  canvas.width,
+    height: canvas.height
+  });
+
+  await camera.start();
+  console.log(`[GestureWave] MediaPipe running at ${canvas.width}×${canvas.height}`);
+  footerStatus.textContent = 'MediaPipe active — show your hand';
+}
+
+
+/* ================================================================
+   SECTION 11: STARTUP — Start Button Handler
+   ================================================================
+
+   WHY A BUTTON?
+   Web browsers implement the "autoplay policy": audio contexts
+   and media playback are BLOCKED until the user interacts with
+   the page (click, keypress, tap). Without a user gesture:
+     - Tone.js context remains in 'suspended' state
+     - Audio won't play even if we call synth.triggerAttack()
+
+   By placing EVERYTHING behind a button click, we satisfy the
+   browser's requirement and both audio + camera start cleanly.
+================================================================ */
+
+startBtn.addEventListener('click', async () => {
+  startBtn.textContent = 'INITIALIZING…';
+  startBtn.disabled    = true;
+
+  try {
+    /*
+      Step 1: Resume Tone.js AudioContext.
+      Tone.start() resumes the AudioContext that Tone.js creates
+      when it loads (browsers immediately suspend it). Must be
+      called inside a user-gesture event handler.
+    */
+    await Tone.start();
+    console.log('[GestureWave] Tone.js context state:', Tone.context.state);
+
+    /*
+      Step 2: Build the audio signal chain.
+      (Synth → Filter → Reverb → Vol → Output)
+    */
+    buildAudioChain();
+
+    /*
+      Step 3: Start webcam + MediaPipe inference loop.
+    */
+    await initializeMediaPipe();
+
+    /*
+      Step 4: Reveal the webcam feed by hiding the overlay.
+    */
+    startOverlay.classList.add('hidden');
+
+  } catch (err) {
+    console.error('[GestureWave] Startup error:', err);
+    startBtn.textContent = 'ERROR — REFRESH PAGE';
+    startBtn.style.background = 'var(--pink)';
+  }
+});
+
+</script>
+</body>
+</html>
